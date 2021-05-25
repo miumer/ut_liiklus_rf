@@ -1,0 +1,221 @@
+---
+title: "Liiklusõnnetused"
+author: "Siim Põldre"
+date: "23 5 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(caret)
+library(readxl)
+library(tidyverse)
+library(imbalance)
+library(lubridate)
+library(suncalc)
+library(mlr)
+```
+
+```{r}
+dat <- read_excel("andmed.xlsx")
+```
+
+```{r}
+table(dat$`Tee element [2]...21`)
+```
+
+```{r}
+summary(dat)
+```
+
+Teeme train test spliti. Paneme andmed ajalisse järjekorda ja võtame viimasest otsast ehk "tulevikust" test seti. Sest algoritm peaks tulevikku ennutama.
+
+Siin valime ka esialgsed tunnused, mida võiks kasutada. Valik sõltub sellest, et poleks liiga palju kategooriaid tunnustel, poleks liiga palju puuduvaid väärtuseid ja mida oleks võibolla loogiline enne teada, kui näiteks sündmuskohale minnakse. Kui näiteks eesmärk on ennustada hukkumise võimalikkust teatud väljakutsel nt. 
+```{r}
+train <- dat %>%
+  select(c("Ühissõidukijuhi osalusel", "Valgustus [2]", "Veoautojuhi osalusel", "Turvavarustust mitte kasutanud isiku osalusel", "Teekatte seisund [2]", "Teekate", "Tee tüüp [1]", "Tee seisund", "Tee tasasus", "Tee element [1]", "Mootorratturi osalusel", "Mootorsõidukijuhi osalusel", "Mopeedijuhi osalusel", "Asula", "Alaealise osalusel", "Maakond (PPA)", "Bussijuhi osalusel", "Eaka (65+) mootorsõidukijuhi osalusel", "Esmase juhiloa omaniku osalusel","Kurvilisus", "Ilmastik [1]", "Jalakäija osalusel", "Kaasreisija osalusel", "Jalgratturi osalusel", "Toimumisaeg", "Hukkunuid")) %>% 
+  mutate_at("Toimumisaeg", dmy_hms, tz = "EET") %>% 
+  arrange(Toimumisaeg) %>% 
+  filter(row_number() < 10106)
+
+test <- dat %>%
+  select(c("Ühissõidukijuhi osalusel", "Valgustus [2]", "Veoautojuhi osalusel", "Turvavarustust mitte kasutanud isiku osalusel", "Teekatte seisund [2]", "Teekate", "Tee tüüp [1]", "Tee seisund", "Tee tasasus", "Tee element [1]", "Mootorratturi osalusel", "Mootorsõidukijuhi osalusel", "Mopeedijuhi osalusel", "Asula", "Alaealise osalusel", "Maakond (PPA)", "Bussijuhi osalusel", "Eaka (65+) mootorsõidukijuhi osalusel", "Esmase juhiloa omaniku osalusel","Kurvilisus", "Ilmastik [1]", "Jalakäija osalusel", "Kaasreisija osalusel", "Jalgratturi osalusel", "Toimumisaeg", "Hukkunuid")) %>% 
+  mutate_at("Toimumisaeg", dmy_hms, tz = "EET") %>% 
+  arrange(Toimumisaeg) %>% 
+  filter(row_number() > 10106)
+```
+
+Siin:
+1) Teeme klassitunuse binaarseks  
+2) Extractime toimumisajast nädalapäeva
+3)Eemaldame NA juhus (kuskil 1k rida ehk 10%. Tuleks mõelda ka nende asendamisele)
+```{r}
+dat2 <- train %>%
+  mutate(Hukkunuid = case_when(
+    Hukkunuid > 0 ~ 1,
+    TRUE ~ 0)) %>% 
+  separate(Toimumisaeg, c("Nädalapäev", "Kellaaeg"), sep = " ") %>%
+  select(-Kellaaeg) %>% 
+  mutate_at("Nädalapäev", wday) %>%
+  mutate_at("Nädalapäev", as.factor) %>% 
+  mutate_at(c("Ühissõidukijuhi osalusel", "Veoautojuhi osalusel", "Turvavarustust mitte kasutanud isiku osalusel", "Mootorratturi osalusel", "Mootorsõidukijuhi osalusel", "Mopeedijuhi osalusel", "Alaealise osalusel", "Bussijuhi osalusel", "Eaka (65+) mootorsõidukijuhi osalusel", "Esmase juhiloa omaniku osalusel", "Jalakäija osalusel", "Kaasreisija osalusel", "Jalgratturi osalusel"), as.numeric) %>% 
+  drop_na()
+```
+
+Siin:
+1) Teeme klassitunuse binaarseks  
+2) Extractime toimumisajast nädalapäeva
+3) Eemaldame NA juhus (kuskil 1k rida ehk 10%. Tuleks mõelda ka nende asendamisele)
+4) Teeme kõik numbirliseks peale klassitunnuse oversamplimise jaoks
+```{r}
+dat2 <- train %>% 
+   mutate(Hukkunuid = case_when(
+    Hukkunuid > 0 ~ 1,
+    TRUE ~ 0)) %>% 
+  separate(Toimumisaeg, c("Nädalapäev", "Kellaaeg"), sep = " ") %>%
+  select(-Kellaaeg) %>% 
+  mutate_at("Nädalapäev", wday) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  mutate_if(is.factor, as.numeric) %>% 
+  mutate(Hukkunuid = factor(Hukkunuid, labels = c("Ei", "Ja"))) %>% 
+  drop_na()
+
+dat2 <- as.data.frame(dat2)
+```
+
+Kasutame oversamplimiseks Bayesi samplerit.
+```{r}
+oversamples <- racog(dat2, numInstances = 8631, classAttr = "Hukkunuid")
+```
+
+```{r}
+colnames(oversamples) <- colnames(dat2)
+
+dat3 <- dat2 %>% 
+  rbind(oversamples)
+```
+
+Teeme one-hot encodingut kategoorilistele tunnustele, millel rohkem kui 2 kategooriat
+```{r}
+dat3 <- dat3 %>% 
+  mutate_at(c("Valgustus [2]", "Teekatte seisund [2]", "Teekate", "Tee tüüp [1]", "Tee seisund", "Tee tasasus", "Tee element [1]", "Asula", "Maakond (PPA)", "Kurvilisus", "Ilmastik [1]", "Nädalapäev"), as.factor) %>% 
+  mutate(Hukkunuid = recode(Hukkunuid, `Ei`= 0, `Ja` = 1)) %>% 
+  mutate(Hukkunuid = as.numeric(Hukkunuid))
+
+dmy <- dummyVars(" ~ .", data = dat3)
+dat3 <- data.frame(predict(dmy, newdata = dat3))
+```
+
+Lisame sampeldatud valimi algsele valimile ja muudame nimed RF algoritmi poolt loetavaks. Peame mõned tunnused ka eemaldama.  
+```{r}
+#Eemaldame tunnused, mis moodustusid kategooriatest, mida test_setis pole (ilmselt problemaatiline lahendus)
+dat3 <- dat3 %>% 
+  select(-`X.Teekatte.seisund..2..11` & -`X.Tee.seisund.11` & -`X.Tee.seisund.12` & -`X.Tee.seisund.13`)
+
+colnames(dat3) <- paste0("V",1:92)
+dat3 <- dat3 %>% 
+  mutate(V92 = recode(V92, `0` = "Ei", `1` = "Ja"))
+```
+
+Teeme esialgse klassifitseerimis taski
+```{r}
+onnetus_task <- makeClassifTask(data = dat3, target = "V92", positive = "Ja")
+```
+
+Esialgne feature importance uurimine võimaldab taandada ennustajad nt 20 tunnuse peale. Tegelikult saab teha ka komputatsiooniliselt palju intensiivsemalt, integreerides selle hüperparameetrite tuunimisse ja mudeli treenimisse nii, et kontrollitakse erinevaid tunnuste kogumite ja hüperparameetrite kombinatsioone pesastatud valideerimisega, kuid see on arvutuslikult väga intensiivne. Seega valime praegu välja 20 tunnust ja jääme nende juurde.
+```{r}
+im_feat <- generateFilterValuesData(onnetus_task, method = c("FSelector_chi.squared"))
+plotFilterValues(im_feat,n.show = 50, filter = "FSelector_chi.squared")
+```
+
+Võtame 20 kõige informatiivsemat tunnust
+```{r}
+top20 <- im_feat$data %>%
+  arrange(desc(value)) %>% 
+  filter(row_number() < 21) %>% 
+  pull(name) 
+
+features <- dat3 %>% 
+  select(top20)
+
+dat3_1 <- features %>% 
+  cbind(dat3$V92) %>% 
+  rename(V96=`dat3$V92`)
+```
+
+Teeme valitud featuritega taski
+```{r}
+onnetus_task2 <- makeClassifTask(data = dat3, target = "V92", positive = "Ja")
+```
+
+Teeme randomforrest classifieri
+```{r}
+rf <- makeLearner("classif.randomForest", predict.type = "response")
+```
+
+Teeme pesastatud hüperparameetrite otsimise, mida kontrollitakse kahel tasemel valideerimisega. Kõigepealt hüperparameetrite valimisel 5 jaotusega valideerimine ja siis välja valitud hüperparameetritega 4 jaotusega valideerimine. See võttis päris kaua aega.
+```{r, eval = FALSE}
+params <- makeParamSet(
+  makeDiscreteParam("ntree", values = c(500, 1000, 1500, 2000, 2500)),
+  makeIntegerParam("mtry", lower = 3, upper = 10),
+  makeIntegerParam("nodesize", lower =2, upper = 10))
+
+ctrl <- makeTuneControlRandom(maxit = 50L)
+inner <- makeResampleDesc("Subsample", iters = 5L)
+lrn <- makeTuneWrapper(rf, resampling = inner, par.set = params, control = ctrl)
+
+outer = makeResampleDesc("CV", iters = 4)
+r = resample(lrn, onnetus_task2, resampling = outer, extract=getTuneResult)
+```
+
+Kasutame hüperparameetreid, mida tuunimine näitas kõige optimaalsemad olevat. mmce määraga kuskil 0.25. See ei ole väga hea tulemus, sest tähendab, et kuskil 20% - 25% juhtudest klassifitseeritakse valesti.
+```{r}
+tuned_rf <- setHyperPars(rf, par.vals = list(ntree = 2000, mtry = 4, nodesize =4))
+```
+
+Treenime valitud hüperparameetritega mudeli.
+```{r}
+tunedTreeModel <- train(tuned_rf, onnetus_task2)
+```
+
+Paneme test-seti training setile vastavasse formaati
+```{r}
+dat_test <- test %>% 
+   mutate(Hukkunuid = case_when(
+    Hukkunuid > 0 ~ 1,
+    TRUE ~ 0)) %>% 
+  separate(Toimumisaeg, c("Nädalapäev", "Kellaaeg"), sep = " ") %>%
+  select(-Kellaaeg) %>% 
+  mutate_at("Nädalapäev", wday) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  mutate_if(is.factor, as.numeric) %>% 
+  mutate(Hukkunuid = factor(Hukkunuid, labels = c("Ei", "Ja"))) %>% 
+  drop_na()
+
+dat_test <- dat_test %>% 
+  mutate_at(c("Valgustus [2]", "Teekatte seisund [2]", "Teekate", "Tee tüüp [1]", "Tee seisund", "Tee tasasus", "Tee element [1]", "Asula", "Maakond (PPA)", "Kurvilisus", "Ilmastik [1]", "Nädalapäev"), as.factor) %>% 
+  mutate(Hukkunuid = recode(Hukkunuid, `Ei`= 0, `Ja` = 1)) %>% 
+  mutate(Hukkunuid = as.numeric(Hukkunuid))
+
+dmy_t <- dummyVars(" ~ .", data = dat_test)
+dat_test <- data.frame(predict(dmy_t, newdata = dat_test))
+
+colnames(dat_test) <- paste0("V",1:92)
+dat_test <- dat_test %>% 
+  mutate(V92 = recode(V92, `0` = "Ei", `1` = "Ja"))
+```
+
+Proovime test-setil tulemusi ennustada
+```{r}
+Test_set <- predict(tunedTreeModel, newdata = dat_test)
+```
+
+Test setil on mmce samutikuskil 26%. Seega sarnane validation setiga. See tähendab, et ülesobitamist pole eriti toimunud. Tulemused pole siiski väga head. Sensitivity näitab, et kõigist "positiivsetest" juhtudest ehk, kus on hukkunu, saame kätte 59% ja Specificity, et kõigist juhtudest, kus pole hukkunut, ennustame 75% kordadest õigesti, et pole hukkunut. 
+```{r}
+confusionMatrix(data=as.factor(Test_set$data$response), reference = as.factor(Test_set$data$truth), positive = "Ja")
+```
+
+
